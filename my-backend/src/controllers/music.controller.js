@@ -1,68 +1,106 @@
-const MusicTrack = require('../models/MusicTrack');
+const { query } = require('../config/db');
 const { sendSuccess, sendError, sendPaginated } = require('../utils/apiResponse');
 
-const localize = (doc, lang) => {
-    const obj = doc.toObject ? doc.toObject() : doc;
-    const l = lang === 'or' ? 'or' : 'am';
-    return { ...obj, title: obj.title?.[l] || obj.title?.am || '' };
-};
-
 exports.getAll = async (req, res, next) => {
-    try {
-        const { category, lang = 'am', page = 1, limit = 20 } = req.query;
-        const filter = { isActive: true };
-        if (category) filter.category = category;
+  try {
+    const { category, lang = 'am', page = 1, limit = 20 } = req.query;
+    let whereClause = 'WHERE mt.is_active = true';
+    const params = [];
+    let idx = 1;
 
-        const skip = (Number(page) - 1) * Number(limit);
-        const total = await MusicTrack.countDocuments(filter);
-        const items = await MusicTrack.find(filter)
-            .sort({ createdAt: -1 })
-            .skip(skip)
-            .limit(Number(limit));
+    if (category) {
+      whereClause += ` AND mt.category = $${idx++}`;
+      params.push(category);
+    }
 
-        return sendPaginated(res, items.map((i) => localize(i, lang)), page, limit, total);
-    } catch (err) { next(err); }
+    const countResult = await query(`SELECT COUNT(*) FROM music_tracks mt ${whereClause}`, params);
+    const total = parseInt(countResult.rows[0].count, 10);
+
+    const offset = (Number(page) - 1) * Number(limit);
+    params.push(Number(limit), offset);
+
+    const result = await query(
+      `SELECT id, title_am, title_or, title_en, category, duration, thumbnail_url, media_url, is_active
+       FROM music_tracks mt ${whereClause}
+       ORDER BY mt.id DESC
+       LIMIT $${idx++} OFFSET $${idx}`,
+      params
+    );
+
+    const localized = result.rows.map(r => localize(r, lang));
+    return sendPaginated(res, localized, page, limit, total);
+  } catch (err) {
+    next(err);
+  }
 };
 
 exports.getOne = async (req, res, next) => {
-    try {
-        const { lang = 'am' } = req.query;
-        const item = await MusicTrack.findById(req.params.id);
-        if (!item) return sendError(res, 404, 'Music track not found.');
-        return sendSuccess(res, 200, 'Music track retrieved', localize(item, lang));
-    } catch (err) { next(err); }
+  try {
+    const { lang = 'am' } = req.query;
+    const result = await query('SELECT * FROM music_tracks WHERE id = $1', [req.params.id]);
+    if (result.rows.length === 0) return sendError(res, 404, 'Music track not found.');
+    return sendSuccess(res, 200, 'Music track retrieved', localize(result.rows[0], lang));
+  } catch (err) {
+    next(err);
+  }
 };
 
 exports.create = async (req, res, next) => {
-    try {
-        const body = { ...req.body };
-        if (req.files?.audio) body.audioUrl = req.files.audio[0].path;
-        if (req.files?.thumbnail) body.thumbnailUrl = req.files.thumbnail[0].path;
-        // multer single audio fallback
-        if (req.file) body.audioUrl = req.file.path;
-
-        const item = await MusicTrack.create(body);
-        return sendSuccess(res, 201, 'Music track created', item);
-    } catch (err) { next(err); }
+  try {
+    const { titleAm, titleOr, titleEn, category, duration, thumbnailUrl, mediaUrl, isActive } = req.body;
+    const result = await query(
+      `INSERT INTO music_tracks (title_am, title_or, title_en, category, duration, thumbnail_url, media_url, is_active)
+       VALUES ($1, $2, $3, $4, $5, $6, $7, $8) RETURNING *`,
+      [titleAm, titleOr, titleEn, category, duration || null, thumbnailUrl || null, mediaUrl, isActive !== false]
+    );
+    return sendSuccess(res, 201, 'Music track created', result.rows[0]);
+  } catch (err) {
+    next(err);
+  }
 };
 
 exports.update = async (req, res, next) => {
-    try {
-        const body = { ...req.body };
-        if (req.files?.audio) body.audioUrl = req.files.audio[0].path;
-        if (req.files?.thumbnail) body.thumbnailUrl = req.files.thumbnail[0].path;
-        if (req.file) body.audioUrl = req.file.path;
+  try {
+    const fieldMap = {
+      titleAm: 'title_am', titleOr: 'title_or', titleEn: 'title_en',
+      category: 'category', duration: 'duration',
+      thumbnailUrl: 'thumbnail_url', mediaUrl: 'media_url', isActive: 'is_active'
+    };
+    const updates = [];
+    const values = [];
+    let idx = 1;
 
-        const item = await MusicTrack.findByIdAndUpdate(req.params.id, body, { new: true, runValidators: true });
-        if (!item) return sendError(res, 404, 'Music track not found.');
-        return sendSuccess(res, 200, 'Music track updated', item);
-    } catch (err) { next(err); }
+    for (const [bodyKey, dbField] of Object.entries(fieldMap)) {
+      if (req.body[bodyKey] !== undefined) {
+        updates.push(`${dbField} = $${idx++}`);
+        values.push(req.body[bodyKey]);
+      }
+    }
+
+    if (updates.length === 0) return sendError(res, 400, 'No fields to update.');
+    values.push(req.params.id);
+    const result = await query(`UPDATE music_tracks SET ${updates.join(', ')} WHERE id = $${idx} RETURNING *`, values);
+    if (result.rows.length === 0) return sendError(res, 404, 'Music track not found.');
+    return sendSuccess(res, 200, 'Music track updated', result.rows[0]);
+  } catch (err) {
+    next(err);
+  }
 };
 
 exports.remove = async (req, res, next) => {
-    try {
-        const item = await MusicTrack.findByIdAndDelete(req.params.id);
-        if (!item) return sendError(res, 404, 'Music track not found.');
-        return sendSuccess(res, 200, 'Music track deleted');
-    } catch (err) { next(err); }
+  try {
+    const result = await query('DELETE FROM music_tracks WHERE id = $1 RETURNING id', [req.params.id]);
+    if (result.rows.length === 0) return sendError(res, 404, 'Music track not found.');
+    return sendSuccess(res, 200, 'Music track deleted');
+  } catch (err) {
+    next(err);
+  }
 };
+
+function localize(item, lang) {
+  const l = lang === 'or' ? 'or' : lang === 'en' ? 'en' : 'am';
+  return {
+    ...item,
+    title: item[`title_${l}`] || item.title_am || '',
+  };
+}

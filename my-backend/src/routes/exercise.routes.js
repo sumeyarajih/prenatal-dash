@@ -1,18 +1,13 @@
 const express = require('express');
 const router = express.Router();
-
 const exerciseController = require('../controllers/exercise.controller');
 const { validate, paginationRules } = require('../utils/validators');
-const adminAuth = require('../middlewares/adminAuth');
-const { uploadImage } = require('../middlewares/upload');
+const { requireAdmin } = require('../middlewares/roleGuard');
 
-// Public routes
 router.get('/', paginationRules, validate, exerciseController.getAll);
 router.get('/:id', exerciseController.getOne);
-
-// Admin routes
-router.post('/', adminAuth, uploadImage, exerciseController.create);
-router.put('/:id', adminAuth, uploadImage, exerciseController.update);
-router.delete('/:id', adminAuth, exerciseController.remove);
+router.post('/', requireAdmin, exerciseController.create);
+router.put('/:id', requireAdmin, exerciseController.update);
+router.delete('/:id', requireAdmin, exerciseController.remove);
 
 module.exports = router;

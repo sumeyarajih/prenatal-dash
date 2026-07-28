@@ -1,47 +1,69 @@
+/**
+ * Centralized error handling middleware
+ * Catches all errors and returns consistent { error: { message, code } } shape
+ */
 const errorHandler = (err, req, res, next) => {
-    let statusCode = err.statusCode || 500;
-    let message = err.message || 'Internal Server Error';
+  let statusCode = err.statusCode || 500;
+  let message = err.message || 'Internal Server Error';
 
-    // Mongoose Validation Error
-    if (err.name === 'ValidationError') {
-        statusCode = 400;
-        const errors = Object.values(err.errors).map((e) => e.message);
-        message = errors.join(', ');
-    }
+  // PostgreSQL unique violation
+  if (err.code === '23505') {
+    statusCode = 409;
+    const detail = err.detail || '';
+    const matches = detail.match(/Key \((.*?)\)=\((.*?)\)/);
+    message = matches ? `A record with this ${matches[1]} already exists.` : 'Duplicate entry.';
+  }
 
-    // Mongoose Duplicate Key
-    if (err.code === 11000) {
-        statusCode = 409;
-        const field = Object.keys(err.keyValue)[0];
-        message = `A record with this ${field} already exists.`;
-    }
+  // PostgreSQL foreign key violation
+  if (err.code === '23503') {
+    statusCode = 400;
+    message = 'Referenced record not found.';
+  }
 
-    // Mongoose CastError (invalid ObjectId)
-    if (err.name === 'CastError') {
-        statusCode = 400;
-        message = `Invalid ${err.path}: ${err.value}`;
-    }
+  // PostgreSQL not null violation
+  if (err.code === '23502') {
+    statusCode = 400;
+    message = `Required field missing: ${err.column || 'unknown'}`;
+  }
 
-    // JWT Errors
-    if (err.name === 'JsonWebTokenError') {
-        statusCode = 401;
-        message = 'Invalid token.';
-    }
-    if (err.name === 'TokenExpiredError') {
-        statusCode = 401;
-        message = 'Token has expired.';
-    }
+  // PostgreSQL invalid input
+  if (err.code === '22P02') {
+    statusCode = 400;
+    message = 'Invalid input format.';
+  }
 
-    if (process.env.NODE_ENV === 'development') {
-        console.error('❌ Error:', err);
-        return res.status(statusCode).json({
-            success: false,
-            message,
-            stack: err.stack,
-        });
-    }
+  // JWT Errors
+  if (err.name === 'JsonWebTokenError') {
+    statusCode = 401;
+    message = 'Invalid token.';
+  }
+  if (err.name === 'TokenExpiredError') {
+    statusCode = 401;
+    message = 'Token has expired.';
+  }
 
-    res.status(statusCode).json({ success: false, message });
+  // Validation Error (express-validator)
+  if (err.type === 'ValidationError' || err.name === 'ValidationError') {
+    statusCode = 422;
+    message = err.message || 'Validation failed';
+  }
+
+  // Firebase auth errors
+  if (err.code && err.code.startsWith('auth/')) {
+    statusCode = 401;
+    message = err.message || 'Authentication failed';
+  }
+
+  if (process.env.NODE_ENV === 'development') {
+    console.error('❌ Error:', err);
+    return res.status(statusCode).json({
+      error: { message, code: statusCode, stack: err.stack },
+    });
+  }
+
+  res.status(statusCode).json({
+    error: { message, code: statusCode },
+  });
 };
 
 module.exports = errorHandler;
